@@ -1,0 +1,21 @@
+{
+    "save_workspace": "never",
+    "always_save_history": false,
+    "reuse_sessions_for_project_links": true,
+    "initial_working_directory": "~/data",
+    "auto_save_on_blur": true,
+    "code_completion_characters": 2,
+    "code_completion_delay": 100,
+    "line_ending_conversion": "posix",
+    "default_encoding": "UTF-8",
+    "cran_mirror": {
+        "name": "Japan (Tokyo) [https]",
+        "host": "The Institute of Statistical Mathematics, Tokyo",
+        "url": "https://cran.ism.ac.jp/",
+        "country": "jp",
+        "ok": 1,
+        "secondary": ""
+    },
+    "posix_terminal_shell": "bash",
+    "editor_theme": "Monokai"
+}

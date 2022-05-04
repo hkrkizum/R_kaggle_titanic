@@ -3,12 +3,12 @@ services:
   RStudio:
     image: hkrkizum/r-tidymodels:20220503
     ports:
-      - "8181:8787"
+      - "8180:8787"
     environment:
       - PASSWORD=root
       - DISPLAY=10.0.75.1:0.0
     volumes:
       - ./data/:/home/rstudio/data/
-      # - ./Setting_R:/home/rstudio/.R
+      - ./Setting:/home/rstudio/.config
       # - ./Setting_Rstudio:/home/rstudio/.rstudio/monitored/user-settings
     restart: always
