@@ -207,6 +207,7 @@ registerDoSEQ()
 stopCluster(cl)
 
 autoplot(wf_age_pred_1_res)
+show_best(wf_age_pred_1_res)
 show_best(wf_age_pred_1_res, n = 5)[2,]
 
 ## Add param -------------------------------------------------------------------
@@ -227,7 +228,7 @@ collect_metrics(wf_age_pred_fit %>% fit_resamples(data_train_1_vFc))
 
 ## finalize model --------------------------------------------------------------
 wf_age_pred_last <-
-  wf_age_red_1 %>% 
+  wf_age_pred_1 %>% 
   finalize_workflow(show_best(wf_age_pred_1_res, n = 5)[2,]) %>% 
   last_fit(data_split_1)
 
@@ -254,15 +255,12 @@ data_split_sv <-
   rsample::initial_time_split(., 
                               prop = dim(data_raw_train)[1]/dim(data_model)[1])
 
+data_split_sv
 data_train_sv <- rsample::training(data_split_sv)
 data_test_sv <- rsample::testing(data_split_sv)
 
 skim(data_train_sv)
 skim(data_test_sv)
-
-
-data_train_sv$Cabin %>% str_extract(., "^.")
-
 
 ## Make recipe -----------------------------------------------------------------
 ### prep regex -----------------------------------------------------------------
@@ -397,7 +395,7 @@ data_train_sv_vFc <-
            strata = Survived)
 data_train_sv_vFc
 
-all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 4
+all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
 cl <- makePSOCKcluster(all_cores)
 registerDoParallel(cl)
 
@@ -440,24 +438,7 @@ res <- wf_sv_pred_1_fit %>%
                 )
 
 collect_notes(res) %>% view(.)
-
-tmp <- data_train_sv_vFc %>% 
-  dplyr::filter(id == "Repeat1") %>% 
-  dplyr::filter(id2 == "Fold02") %>% 
-  dplyr::mutate(train = map(splits, ~rsample::training(.))) %>% 
-  dplyr::mutate(test  = map(splits, ~rsample::testing(.))) 
-
-recipe_sv %>% prep() %>% bake(tmp$train[[1]])
-recipe_sv %>% prep() %>% bake(tmp$test[[1]])
-
-tmp$train[[1]] %>% 
-  dplyr::mutate(Cabin = stringr::str_extract(Cabin, "^.")) %>% 
-  pull(Cabin) %>% table(.)
-
-tmp$test[[1]] %>% 
-  dplyr::mutate(Cabin = stringr::str_extract(Cabin, "^.")) %>% 
-  pull(Cabin) %>% table(.)
-
+collect_metrics(res)
 
 ## Get prediction result -------------------------------------------------------
 wf_sv_pred_1_last <-
@@ -474,4 +455,8 @@ fwrite(res, str_c(out_dir, "res.csv"), row.names = F)
 data_raw_test
 
 
-recipe_sv %>% prep() %>% bake(data_test_sv)
+# ------------------------------------------------------------------------------
+library(vip)
+extract_workflow(wf_sv_pred_1_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 15)
