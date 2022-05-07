@@ -8,11 +8,17 @@ library(patchwork)
 library(skimr)
 library(GGally)
 library(doParallel)
+library(vip)
+library(ggsignif)
+library(gghalves)
 
 out_dir <- "Result/" 
 dir.create(out_dir, showWarnings = F, recursive = T)
 
 options(tidymodels.dark = TRUE)
+
+# save.image(str_c(out_dir, "workspase.RData"))
+load(str_c(out_dir, "workspase.RData"))
 
 # 1. load data --------------------------------------------------------------------
 data_raw_train <- fread("Rawdata/train.csv")
@@ -118,9 +124,10 @@ str(data_train_1)
 
 skim(data_test_1)
 
-data_train_1 %>% 
-  dplyr::filter(Embarked == "")
-
+data_train_1$Pclass %>% table()
+data_train_1$SibSp %>% table()
+data_train_1$Parch %>% table()
+data_train_1$Embarked %>% table()
 
 ## make recipe -----------------------------------------------------------------
 recipe_Age_pred <- 
@@ -129,22 +136,42 @@ recipe_Age_pred <-
   
   recipes::step_select(all_outcomes(), all_numeric_predictors(), Sex, Embarked) %>% 
   
-  recipes::step_filter(!is.na(Fare)) %>% 
-  recipes::step_filter(Embarked != "") %>% 
+  recipes::step_impute_median(Fare) %>% 
+  recipes::step_impute_mode(Embarked) %>% 
   
-  recipes::step_mutate_at(any_of(!!c("Pclass", "SibSp", "Parch")),
-                          fn = function(x){as.character(x)}) %>% 
-  recipes::step_novel(Pclass, SibSp, Parch) %>% 
+  recipes::step_mutate(Pclass = forcats::as_factor(Pclass)) %>% 
+  recipes::step_mutate(Pclass = forcats::fct_expand(Pclass, c("1", "2", "3"))) %>% 
   
-  recipes::step_dummy(all_predictors(), -Fare, one_hot = TRUE)  %>% 
-  recipes::step_nzv(all_predictors())
+  # recipes::step_mutate(SibSp = forcats::as_factor(SibSp)) %>% 
+  # recipes::step_mutate(SibSp = forcats::fct_expand(SibSp, c("1", "2", "3"))) %>% 
+  # 
+  # recipes::step_mutate(Pclass = forcats::as_factor(Pclass)) %>% 
+  # recipes::step_mutate(Pclass = forcats::fct_expand(Pclass, c("1", "2", "3"))) %>% 
+  
+  # recipes::step_mutate_at(any_of(!!c("Pclass", "SibSp", "Parch")),
+  #                         fn = function(x){as.character(x)}) %>% 
+  # recipes::step_novel(Pclass, SibSp, Parch) %>% 
+  
+  # Embarked: impute by mode
+
+  recipes::step_mutate(Embarked = dplyr::if_else(Embarked == "",
+                                                 NA_character_,
+                                                 as.character(Embarked))) %>% 
+  recipes::step_impute_mode(Embarked) %>% 
+  recipes::step_string2factor(Embarked) %>% 
+  
+  recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE)  %>% 
+  
+  recipes::step_normalize(Fare, SibSp, Parch) 
   
 recipe_Age_pred  
+
+recipe_Age_pred %>% prep() %>% bake(NULL) %>% skim()
 
 ## make model ------------------------------------------------------------------
 model_age_pred <- 
   boost_tree(
-    trees = 1000,
+    trees = tune(),
     tree_depth = tune(),
     min_n = tune(),
     mtry = tune(),
@@ -171,7 +198,9 @@ wf_age_pred_1
 param <-
   wf_age_pred_1 %>% 
   hardhat::extract_parameter_set_dials() %>% 
-  finalize(recipes::prep(recipe_Age_pred) %>% recipes::bake(new_data = NULL) %>% dplyr::select(-all_outcomes()))
+  finalize(recipes::prep(recipe_Age_pred) %>% 
+             recipes::bake(new_data = NULL) %>% 
+             dplyr::select(-all_outcomes()))
 param
 param$object
 
@@ -190,6 +219,7 @@ data_train_1_vFc <-
 data_train_1_vFc
 
 all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
+# all_cores <- 12*2
 cl <- makePSOCKcluster(all_cores)
 registerDoParallel(cl)
 
@@ -198,7 +228,7 @@ wf_age_pred_1_res <-
   tune_grid(
     data_train_1_vFc,
     grid = hyper_grid,
-    metrics = metric_set(rmse),
+    metrics = metric_set(rmse, rsq, mae),
     control = control_grid(verbose = TRUE,
                            parallel_over = "everything")
   )
@@ -207,13 +237,13 @@ registerDoSEQ()
 stopCluster(cl)
 
 autoplot(wf_age_pred_1_res)
-show_best(wf_age_pred_1_res)
+show_best(wf_age_pred_1_res, metric = "rmse")
 show_best(wf_age_pred_1_res, n = 5)[2,]
 
 ## Add param -------------------------------------------------------------------
 wf_age_pred_1 <-
   wf_age_pred_1 %>%
-  finalize_workflow(show_best(wf_age_pred_1_res, n = 5)[2,]) 
+  finalize_workflow(show_best(wf_age_pred_1_res, n = 5, metric = "rmse")[1,]) 
 
 wf_age_pred_1
 
@@ -228,8 +258,7 @@ collect_metrics(wf_age_pred_fit %>% fit_resamples(data_train_1_vFc))
 
 ## finalize model --------------------------------------------------------------
 wf_age_pred_last <-
-  wf_age_pred_1 %>% 
-  finalize_workflow(show_best(wf_age_pred_1_res, n = 5)[2,]) %>% 
+  wf_age_pred_fit %>% 
   last_fit(data_split_1)
 
 collect_predictions(wf_age_pred_last, summarize = TRUE) %>% dim()
@@ -250,9 +279,9 @@ fwrite(data_model_mod, str_c(out_dir, "data_model_mod.csv"))
 skim(data_model_mod)
 
 data_split_sv <-
-  data_model_mod %>% 
+  data_model_mod %>%
   dplyr::arrange(Survived) %>%
-  rsample::initial_time_split(., 
+  rsample::initial_time_split(.,
                               prop = dim(data_raw_train)[1]/dim(data_model)[1])
 
 data_split_sv
@@ -279,19 +308,19 @@ param_t_high <- df_Ticket %>%
   dplyr::filter(n %in% c(2, 3, 4)) %>% 
   dplyr::pull(Ticket)
 
-data_test_sv %>% 
-  dplyr::mutate(ticket_mod = case_when(Ticket %in% param_t_mid  ~ 1,
-                                       Ticket %in% param_t_high ~ 2,
-                                       TRUE ~ 0)) %>% 
-  pull(ticket_mod) %>% 
-  table()
-
-data_train_sv %>% 
-  dplyr::mutate(ticket_mod = case_when(Ticket %in% param_t_mid  ~ 1,
-                                       Ticket %in% param_t_high ~ 2,
-                                       TRUE ~ 0)) %>% 
-  pull(ticket_mod) %>% 
-  table()
+# data_test_sv %>% 
+#   dplyr::mutate(ticket_mod = case_when(Ticket %in% param_t_mid  ~ 1,
+#                                        Ticket %in% param_t_high ~ 2,
+#                                        TRUE ~ 0)) %>% 
+#   pull(ticket_mod) %>% 
+#   table()
+# 
+# data_train_sv %>% 
+#   dplyr::mutate(ticket_mod = case_when(Ticket %in% param_t_mid  ~ 1,
+#                                        Ticket %in% param_t_high ~ 2,
+#                                        TRUE ~ 0)) %>% 
+#   pull(ticket_mod) %>% 
+#   table()
 
 ### prep cabin factor ----------------------------------------------------------
 param_cabin <- data_model_mod %>% 
@@ -302,7 +331,8 @@ param_cabin <- data_model_mod %>%
   unique(.)
 
 ## recipes --------------------------------------------------------------------
-recipe_sv <- recipes::recipe(Survived ~ ., data = data_train_sv) %>% 
+recipe_sv <- 
+  recipes::recipe(Survived ~ ., data = data_train_sv) %>% 
   recipes::update_role(PassengerId, new_role = "uid") %>% 
   
   # create feature from name
@@ -318,7 +348,7 @@ recipe_sv <- recipes::recipe(Survived ~ ., data = data_train_sv) %>%
   # Cabin: extract head and fill NA as unknown
   recipes::step_mutate(Cabin = stringr::str_extract(Cabin, "^.")) %>% 
   recipes::step_mutate(Cabin = forcats::as_factor(Cabin)) %>% 
-  recipes::step_mutate(Cabin = forcats::fct_expand(Cabin, !!param_cabin)) %>% 
+  recipes::step_mutate(Cabin = forcats::fct_expand(Cabin, all_of(!!param_cabin))) %>% 
   recipes::step_unknown(Cabin) %>% 
   
   # Embarked: impute by mode
@@ -327,28 +357,49 @@ recipe_sv <- recipes::recipe(Survived ~ ., data = data_train_sv) %>%
   recipes::step_string2factor(Embarked) %>% 
   
   # Ticket group
-  recipes::step_mutate(Ticket = dplyr::case_when(Ticket %in% !!param_t_mid  ~ 1,
-                                                 Ticket %in% !!param_t_high ~ 2,
-                                                 TRUE ~ 0)) %>% 
-  recipes::step_mutate(Ticket = as.character(Ticket)) %>%
-  recipes::step_novel(Ticket) %>%
+  recipes::step_mutate(Ticket = dplyr::case_when(Ticket %in% all_of(!!param_t_mid)  ~ 1,
+                                                 Ticket %in% all_of(!!param_t_high) ~ 2,
+                                                 TRUE ~ 0)) %>%
+  recipes::step_mutate(Ticket = forcats::as_factor(Ticket)) %>%
+  recipes::step_mutate(Ticket = forcats::fct_expand(Ticket, c("0", "1", "2"))) %>%
+  
+  # Family: SibSp + Parch + 1 
+  recipes::step_mutate(Family = SibSp + Parch + 1) %>% 
+  recipes::step_mutate(Family = dplyr::case_when(Family == 1 ~ 1,
+                                                 Family >= 2 & Family <= 4 ~ 2,
+                                                 Family >= 5 & Family <= 7 ~ 1,
+                                                 Family >= 8 ~ 0)) %>% 
+  recipes::step_mutate(Family = forcats::as_factor(Family)) %>%
+  recipes::step_mutate(Family = forcats::fct_expand(Family, c("0", "1", "2"))) %>% 
+  recipes::step_mutate(Family = forcats::fct_relevel(Family, "0", "1")) %>%
+  
+  # Pclass
+  recipes::step_mutate(Pclass = forcats::as_factor(Pclass)) %>%
+  recipes::step_mutate(Pclass = forcats::fct_expand(Pclass, c("1", "2", "3"))) %>% 
+  recipes::step_mutate(Pclass = forcats::fct_relevel(Pclass, "1", "2")) %>%
   
   # drop name
   recipes::step_select(-Name) %>% 
+  recipes::step_select(-Parch, -SibSp) %>% 
   
   # factor to dummy
   recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
   
+  # normalize numeric
+  recipes::step_normalize(Fare, Age) 
+  
   # filter zero variance
-  recipes::step_zv(all_predictors())
+  # recipes::step_zv(all_predictors())
+  # recipes::step_nzv(all_predictors())
 
-recipe_sv %>% prep() %>% bake(new_data = NULL)
-recipe_sv %>% prep() %>% bake(new_data = data_test_sv)
+recipe_sv
+recipe_sv %>% prep() %>% bake(new_data = NULL)  %>% skim()
+recipe_sv %>% prep() %>% bake(new_data = data_test_sv) %>% skim()
 
 ## make Model ------------------------------------------------------------------
 model_sv_pred <- 
   boost_tree(
-    trees = 1000,
+    trees = tune(),
     tree_depth = tune(),
     min_n = tune(),
     mtry = tune(),
@@ -383,19 +434,20 @@ param$object
 
 hyper_grid <-
   param %>% 
-  dials::grid_latin_hypercube(size = 100)
+  dials::grid_latin_hypercube(size = 50)
 plot(hyper_grid)
 
 ## Grid search -----------------------------------------------------------------
 data_train_sv_vFc <-
   vfold_cv(data_train_sv,
            v = 10, 
-           repeats = 5,
+           repeats = 3,
            # repeats = 1,
            strata = Survived)
 data_train_sv_vFc
 
 all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
+# all_cores <- 14*2
 cl <- makePSOCKcluster(all_cores)
 registerDoParallel(cl)
 
@@ -404,7 +456,7 @@ wf_sv_pred_1_res <-
   tune_grid(
     data_train_sv_vFc,
     grid = hyper_grid,
-    metrics = metric_set(mn_log_loss),
+    metrics = metric_set(accuracy, roc_auc, precision, recall),
     control = control_grid(verbose = TRUE,
                            parallel_over = "everything")
   )
@@ -413,14 +465,15 @@ registerDoSEQ()
 stopCluster(cl)
 
 autoplot(wf_sv_pred_1_res)
-save(wf_sv_pred_1_res, file = str_c(out_dir, "wf_sv_pred_1_res_2.Rdata"))
+save(wf_sv_pred_1_res, file = str_c(out_dir, "wf_sv_pred_1_res_5.Rdata"))
 
-show_best(wf_sv_pred_1_res)
+show_best(wf_sv_pred_1_res, metric = "roc_auc")
+show_best(wf_sv_pred_1_res, metric = "accuracy")
 
 ## fit result ------------------------------------------------------------------
 wf_sv_pred_1_fit <-
   wf_sv_pred_1 %>%
-  finalize_workflow(select_best(wf_sv_pred_1_res, "mn_log_loss")) %>%
+  finalize_workflow(show_best(wf_sv_pred_1_res, "accuracy")[1, ]) %>%
   fit(data_train_sv)
 
 res <- wf_sv_pred_1_fit %>% 
@@ -443,7 +496,7 @@ collect_metrics(res)
 ## Get prediction result -------------------------------------------------------
 wf_sv_pred_1_last <-
   wf_sv_pred_1 %>%
-  finalize_workflow(select_best(wf_sv_pred_1_res, "mn_log_loss")) %>%
+  finalize_workflow(select_best(wf_sv_pred_1_res, "accuracy")) %>%
   last_fit(data_split_sv)
 
 res <- data_test_sv %>% 
@@ -451,12 +504,367 @@ res <- data_test_sv %>%
   dplyr::arrange(PassengerId) %>% 
   dplyr::select(PassengerId, Survived)
 
-fwrite(res, str_c(out_dir, "res.csv"), row.names = F)
-data_raw_test
+out_n <- lubridate::now(tzone = "Asia/Tokyo") %>%
+  as.character() %>% 
+  str_replace(., "\\s", "_") %>% 
+  str_remove_all(., "-|:|\\s") %>% 
+  str_c(out_dir, "MySubmission_all_feature_", ., ".csv")
+out_n
+fwrite(res, out_n, row.names = F)
 
-
-# ------------------------------------------------------------------------------
+# update recipes ---------------------------------------------------------------
+## visualize vip ---------------------------------------------------------------
 library(vip)
 extract_workflow(wf_sv_pred_1_last) %>%
   extract_fit_parsnip() %>%
-  vip(geom = "point", num_features = 15)
+  vip(geom = "point", num_features = 30)
+
+tmp <- 
+  extract_workflow(wf_sv_pred_1_last) %>%
+  extract_fit_parsnip() %>% 
+  .$fit %>% 
+  xgboost::xgb.importance(model = ., )
+
+tmp
+
+tmp$fit
+
+data_train_sv
+data_train_sv$Fare
+data_train_sv$Pclass
+data_train_sv$SibSp %>% hist()
+data_train_sv$Parch %>% hist()
+
+
+## plot feature effect ---------------------------------------------------------
+procecced_data <- recipe_sv %>% 
+  prep() %>% bake(NULL)
+procecced_data %>% skim()
+
+tmp <- procecced_data %>% 
+  # dplyr::select(-Age) %>% 
+  tidyr::pivot_longer(cols = c(-PassengerId, -Survived),
+                      names_to = "feature",
+                      values_to = "val") %>% 
+  dplyr::group_by(feature) %>% 
+  tidyr::nest() %>% 
+  dplyr::ungroup() %>% 
+  dplyr::mutate(type = case_when(feature %in% c("Fare", "Age") ~ "logistic",
+                                 TRUE ~ "Category")) %>% 
+  dplyr::mutate(stat = pmap(.l = list(feature, type, data),
+                            .f = function(feature, type, data){
+                              if(type == "logistic"){
+                                t.test(data = data, val ~ Survived) %>% tidy()
+                              } else{
+                                tmp <- data %>% 
+                                  dplyr::group_by(Survived, val) %>% 
+                                  dplyr::summarise(n = n()) %>% 
+                                  dplyr::ungroup() %>% 
+                                  tidyr::pivot_wider(names_from = val,
+                                                     names_prefix = "feature_",
+                                                     values_from = n, 
+                                                     values_fill = 0) 
+                                if(dim(tmp)[2] == 3 & dim(tmp)[1] == 2){
+                                  res <- tmp %>%
+                                    tibble::column_to_rownames("Survived") %>%
+                                    as.matrix() %>%
+                                    fisher.test(.) %>% tidy()
+                                }else{
+                                  res <- NA
+                                }
+                                return(res)
+                              }
+                            })) %>% 
+  dplyr::mutate(pval = map(.x = stat, 
+                           .f = function(x){
+                             if(!is.na(x[[1]])){
+                              res <- x$p.value[1]
+                             } else{
+                               res <- NA
+                             }
+                             return(res)}) %>% unlist) %>% 
+  dplyr::mutate(plot = pmap(.l = list(feature, type, data, pval),
+                            .f = function(feature, type, data, pval){
+                              p_annotate <- case_when(pval < 0.01 ~ "p < 0.01",
+                                                      pval < 0.05 ~ "p < 0.05",
+                                                      TRUE ~ "n.s")
+                              
+                              if(type == "logistic"){
+                                g <- ggplot(data, 
+                                            aes(x = Survived,
+                                                y = val,
+                                                color = Survived,
+                                                fill = Survived)) +
+                                  theme_bw(base_family = "Arial", base_size = 10) +
+                                  geom_half_violin(nudge = 0.07) +
+                                  geom_boxplot(outlier.shape = NA, 
+                                               fill = "white",
+                                               width = 0.1) +
+                                  geom_half_point(width = 0.5,
+                                                  transformation = 
+                                                    position_jitter(height = 0,
+                                                                    width = 0.05)) +
+                                  ggsignif::geom_signif(
+                                    textsize = 3,
+                                    y_position = max(data$val)*1.05,
+                                    xmin = 1, xmax = 2, 
+                                    annotation = p_annotate,
+                                    tip_length = 0,
+                                    color = "black"
+                                  ) +
+                                  ggtitle(feature)
+                              } else{
+                                g <- data %>% 
+                                  dplyr::group_by(Survived, val) %>% 
+                                  dplyr::summarise(n = n()) %>% 
+                                  dplyr::ungroup() %>% 
+                                  ggplot(., 
+                                         aes(x = as.factor(val),
+                                             y = n,
+                                             fill = Survived)) +
+                                  theme_bw(base_family = "Arial", base_size = 10)+
+                                  geom_bar(position="fill", stat="identity") +
+                                  xlab("feature") +
+                                  ylab("Popuration (%)") +
+                                  ggtitle(feature) +
+                                  ggsignif::geom_signif(textsize = 3,
+                                                        y_position = 1.01,
+                                                        xmin = 1, xmax = 2, 
+                                                        annotation = p_annotate,
+                                                        tip_length = 0,
+                                                        color = "black")
+                                }
+                            })) %>% 
+  dplyr::mutate(plot_group = case_when(feature %in% c("Age", "Fare") ~ "Numeric",
+                                       feature %in% c("Officer", "Royalty",
+                                                      "Mrs", "Miss", "Master") ~ "Name",
+                                       feature  %>% str_detect(., "Pclass_") ~ "Pclass",
+                                       feature  %>% str_detect(., "Sex_") ~ "Sex",
+                                       feature  %>% str_detect(., "Ticket_") ~ "Ticket",
+                                       feature  %>% str_detect(., "Cabin_") ~ "Cabin",
+                                       feature  %>% str_detect(., "Embarked_") ~ "Embarked",
+                                       feature  %>% str_detect(., "Family_") ~ "Family",
+  )) %>% 
+  dplyr::group_by(plot_group) %>% 
+  tidyr::nest()
+
+for (i in 1:dim(tmp)[1]) {
+  print(i)
+  g <- wrap_plots(tmp$data[[i]]$plot)
+  plot(g)
+  ggsave(plot = g,
+         filename = str_c(out_dir, "Plot_Suvived_by_feature_", tmp$plot_group[[i]], ".png"),
+         dpi = 300, units = "cm", width = 25, height = 17)
+}
+
+## make modified recipes -------------------------------------------------------
+recipe_sv_v2 <- 
+  recipes::recipe(Survived ~ ., data = data_train_sv) %>% 
+  recipes::update_role(PassengerId, new_role = "uid") %>% 
+  
+  # create feature from name
+  recipes::step_regex(Name, pattern = params_Officer, result = "Officer") %>% 
+  recipes::step_regex(Name, pattern = params_Royalty, result = "Royalty") %>% 
+  recipes::step_regex(Name, pattern = params_Mrs, result = "Mrs") %>% 
+  recipes::step_regex(Name, pattern = params_Miss, result = "Miss") %>% 
+  recipes::step_regex(Name, pattern = params_Master, result = "Master") %>% 
+  
+  # Fare impute NA by median
+  recipes::step_impute_median(Fare) %>% 
+  
+  # Cabin: extract head and fill NA as unknown
+  recipes::step_mutate(Cabin = stringr::str_extract(Cabin, "^.")) %>% 
+  recipes::step_mutate(Cabin = dplyr::case_when(Cabin %in% all_of(!!c("A", "G"))  ~ 0,
+                                                Cabin %in% all_of(!!c("B", "C", "D", "E", "F"))  ~ 1,
+                                                Cabin %in% all_of(!!c("T"))  ~ 2,  
+                                                is.na(Cabin) ~ 2,
+                                                TRUE ~ 3)) %>% 
+  recipes::step_mutate(Cabin = forcats::as_factor(Cabin)) %>% 
+  recipes::step_mutate(Cabin = forcats::fct_expand(Cabin, all_of(!!as.character(0:2)))) %>% 
+
+  # Embarked: impute by mode
+  recipes::step_mutate(Embarked = if_else(Embarked == "", NA_character_, as.character(Embarked))) %>% 
+  recipes::step_impute_mode(Embarked) %>% 
+  recipes::step_string2factor(Embarked) %>% 
+  
+  # Ticket group
+  recipes::step_mutate(Ticket = dplyr::case_when(Ticket %in% all_of(!!param_t_mid)  ~ 1,
+                                                 Ticket %in% all_of(!!param_t_high) ~ 2,
+                                                 TRUE ~ 0)) %>%
+  recipes::step_mutate(Ticket = forcats::as_factor(Ticket)) %>%
+  recipes::step_mutate(Ticket = forcats::fct_expand(Ticket, c("0", "1", "2"))) %>%
+  
+  # Family: SibSp + Parch + 1 
+  recipes::step_mutate(Family = SibSp + Parch + 1) %>% 
+  recipes::step_mutate(Family = dplyr::case_when(Family == 1 ~ 1,
+                                                 Family >= 2 & Family <= 4 ~ 2,
+                                                 Family >= 5 & Family <= 7 ~ 1,
+                                                 Family >= 8 ~ 0)) %>% 
+  recipes::step_mutate(Family = forcats::as_factor(Family)) %>%
+  recipes::step_mutate(Family = forcats::fct_expand(Family, c("0", "1", "2"))) %>% 
+  recipes::step_mutate(Family = forcats::fct_relevel(Family, "0", "1")) %>%
+  
+  # Pclass
+  recipes::step_mutate(Pclass = forcats::as_factor(Pclass)) %>%
+  recipes::step_mutate(Pclass = forcats::fct_expand(Pclass, c("1", "2", "3"))) %>% 
+  recipes::step_mutate(Pclass = forcats::fct_relevel(Pclass, "1", "2")) %>%
+  
+  # drop name
+  recipes::step_select(-Name) %>% 
+  recipes::step_select(-Parch, -SibSp) %>% 
+  
+  # factor to dummy
+  recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
+  
+  # normalize numeric
+  recipes::step_normalize(Fare, Age) %>% 
+  
+  recipes::step_select(#-Royalty,
+                       -Officer,
+                       -Sex_male,
+                       # -Miss, -Master,
+                       
+                       # -Pclass_X3,
+                       -Embarked_Q)
+recipe_sv_v2
+
+recipe_sv_v2 %>% prep() %>% bake(NULL) %>% skim()
+recipe_sv_v2 %>% prep() %>% bake(data_test_sv) %>% skim()
+
+tmp_cor <- recipe_sv_v2 %>% prep() %>% bake(NULL) %>% 
+  dplyr::select(-PassengerId) %>% 
+  dplyr::mutate_all(as.numeric) %>% 
+  as.matrix(.) %>% 
+  cor(., method = "spearman") %>% 
+  round(., digits = 3)
+
+tmp_cor %>% 
+  as.data.table(keep.rownames = T) %>% 
+  dplyr::rename(Col = 1)
+
+corrplot(tmp_cor, method = "color", addCoef.col = TRUE)
+
+## make Model ------------------------------------------------------------------
+model_sv_pred <-
+  boost_tree(
+    trees = tune(),
+    tree_depth = tune(),
+    min_n = tune(),
+    mtry = tune(),
+    sample_size = tune(),
+    learn_rate = 0.1
+  ) %>%
+  set_engine("xgboost",
+             lambda = tune(),
+             alpha  = tune(),
+             # params=list(tree_method = 'gpu_hist')
+  ) %>%
+  set_mode("classification")
+
+model_sv_pred
+
+## make workflow ---------------------------------------------------------------
+wf_sv_pred_2 <- workflow() %>% 
+  add_recipe(recipe_sv_v2) %>% 
+  add_model(model_sv_pred)
+
+wf_sv_pred_2
+
+## Make Grid -------------------------------------------------------------------
+param <-
+  wf_sv_pred_2 %>% 
+  hardhat::extract_parameter_set_dials() %>% 
+  finalize(recipes::prep(recipe_sv_v2) %>%
+             recipes::bake(new_data = NULL) %>%
+             dplyr::select(-all_outcomes()))
+param
+param$object
+
+hyper_grid <-
+  param %>% 
+  dials::grid_latin_hypercube(size = 50)
+plot(hyper_grid)
+
+## Grid search -----------------------------------------------------------------
+data_train_sv_vFc <-
+  vfold_cv(data_train_sv,
+           v = 10, 
+           repeats = 2,
+           # repeats = 1,
+           strata = Survived)
+data_train_sv_vFc
+
+all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
+# all_cores <- 14*2
+cl <- makePSOCKcluster(all_cores)
+registerDoParallel(cl)
+
+wf_sv_pred_2_res <-
+  wf_sv_pred_2 %>% 
+  tune_grid(
+    data_train_sv_vFc,
+    grid = hyper_grid,
+    metrics = metric_set(accuracy, roc_auc, precision, recall),
+    control = control_grid(verbose = TRUE,
+                           parallel_over = "everything")
+  )
+
+registerDoSEQ()
+stopCluster(cl)
+
+collect_notes(wf_sv_pred_2_res)
+
+
+save(wf_sv_pred_2_res, file = str_c(out_dir, "wf_sv_pred_2_res_1.Rdata"))
+
+autoplot(wf_sv_pred_2_res)
+show_best(wf_sv_pred_2_res, metric = "roc_auc")
+show_best(wf_sv_pred_2_res, metric = "accuracy")
+
+
+## fit result ------------------------------------------------------------------
+wf_sv_pred_2_fit <-
+  wf_sv_pred_2 %>%
+  finalize_workflow(show_best(wf_sv_pred_2_res, "accuracy")[1, ]) %>%
+  fit(data_train_sv)
+wf_sv_pred_2_fit
+
+res <- wf_sv_pred_2_fit %>% 
+  fit_resamples(data_train_sv_vFc, 
+                control = control_resamples(
+                  verbose = TRUE,
+                  allow_par = TRUE,
+                  # extract = NULL,
+                  # save_pred = FALSE,
+                  # pkgs = NULL,
+                  # save_workflow = FALSE,
+                  # event_level = "first",
+                  parallel_over = "everything"
+                )
+  )
+
+collect_notes(res) %>% view(.)
+collect_metrics(res)
+
+## Get prediction result -------------------------------------------------------
+wf_sv_pred_1_last <-
+  wf_sv_pred_1 %>%
+  finalize_workflow(select_best(wf_sv_pred_1_res, "accuracy")) %>%
+  last_fit(data_split_sv)
+
+res <- data_test_sv %>% 
+  dplyr::mutate(Survived = collect_predictions(wf_sv_pred_1_last) %>% pull(.pred_class)) %>% 
+  dplyr::arrange(PassengerId) %>% 
+  dplyr::select(PassengerId, Survived)
+
+out_n <- lubridate::now(tzone = "Asia/Tokyo") %>%
+  as.character() %>% 
+  str_replace(., "\\s", "_") %>% 
+  str_remove_all(., "-|:|\\s") %>% 
+  str_c(out_dir, "MySubmission_", ., ".csv")
+
+fwrite(res, out_n, row.names = F)
+
+param_submit <- str_c("kaggle competitions submit -c titanic -f ", out_n)
+param_submit
+system(param_submit)

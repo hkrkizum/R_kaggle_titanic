@@ -1,7 +1,7 @@
 version: '3'
 services:
   RStudio:
-    image: hkrkizum/r-tidymodels:20220503
+    image: hkrkizum/r-tidymodels:20220506
     ports:
       - "8180:8787"
     environment:
@@ -12,3 +12,10 @@ services:
       - ./Setting:/home/rstudio/.config
       # - ./Setting_Rstudio:/home/rstudio/.rstudio/monitored/user-settings
     restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
