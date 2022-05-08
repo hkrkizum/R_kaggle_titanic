@@ -15,23 +15,26 @@ RUN apt-get clean all && \
      libmagick++-dev \
      tk
 
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('tidymodels'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('tidytext'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('finetune'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('tidymodels'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('tidytext'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('finetune'))" > tmp.R | Rscript tmp.R
 
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('GGally'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('doParallel'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('skimr'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('ggrepel'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('stopwords'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('GGally'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('doParallel'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('skimr'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('ggrepel'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('stopwords'))" > tmp.R | Rscript tmp.R
 
-# RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('xgboost'))" > tmp.R | Rscript tmp.R
+# RUN echo "install.packages(c('xgboost'))" > tmp.R | Rscript tmp.R
 RUN wget https://github.com/dmlc/xgboost/releases/download/v1.6.0/xgboost_r_gpu_linux_1.6.0.tar.gz
 RUN R CMD INSTALL ./xgboost_r_gpu_linux_1.6.0.tar.gz
 
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('glmnet'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('lme4'))" > tmp.R | Rscript tmp.R
-RUN echo "options(repos='https://cran.ism.ac.jp/')\ninstall.packages(c('vip'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('glmnet'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('lme4'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('vip'))" > tmp.R | Rscript tmp.R
 
-RUN 
-RUN echo /opt/venv/reticulate/bin/pip install --upgrade tensorflow-gpu==2.8.*
+COPY termcolor-1.1.0-py2.py3-none-any.whl /
+RUN /opt/venv/reticulate/bin/pip install /termcolor-1.1.0-py2.py3-none-any.whl
+RUN /opt/venv/reticulate/bin/pip install --upgrade tensorflow-gpu==2.8.*
+
+RUN echo "install.packages(c('keras'))" > tmp.R | Rscript tmp.R
