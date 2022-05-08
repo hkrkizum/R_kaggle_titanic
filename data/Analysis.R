@@ -18,7 +18,7 @@ dir.create(out_dir, showWarnings = F, recursive = T)
 options(tidymodels.dark = TRUE)
 
 # save.image(str_c(out_dir, "workspase.RData"))
-load(str_c(out_dir, "workspase.RData"))
+# load(str_c(out_dir, "workspase.RData"))
 
 # 1. load data --------------------------------------------------------------------
 data_raw_train <- fread("Rawdata/train.csv")
@@ -276,13 +276,15 @@ fwrite(data_model_mod, str_c(out_dir, "data_model_mod.csv"))
 
 # 4. Predict survive -----------------------------------------------------------
 ## 1. split data ---------------------------------------------------------------
+data_model_mod <- fread(str_c(out_dir, "data_model_mod.csv"))
+
 skim(data_model_mod)
 
 data_split_sv <-
   data_model_mod %>%
   dplyr::arrange(Survived) %>%
   rsample::initial_time_split(.,
-                              prop = dim(data_raw_train)[1]/dim(data_model)[1])
+                              prop = dim(data_raw_train)[1]/dim(data_model_mod)[1])
 
 data_split_sv
 data_train_sv <- rsample::training(data_split_sv)
@@ -386,7 +388,11 @@ recipe_sv <-
   recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
   
   # normalize numeric
-  recipes::step_normalize(Fare, Age) 
+  recipes::step_normalize(Fare, Age) %>% 
+  
+  # Outcome to factor
+  recipes::step_mutate(Survived = forcats::as_factor(Survived)) %>% 
+  recipes::step_mutate(Survived = forcats::fct_expand(Survived, c("0", "1"))) 
   
   # filter zero variance
   # recipes::step_zv(all_predictors())
@@ -717,7 +723,8 @@ recipe_sv_v2 <-
   recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
   
   # normalize numeric
-  recipes::step_normalize(Fare, Age) 
+  recipes::step_normalize(Fare, Age)
+  
 recipe_sv_v2
 
 recipe_sv_v2 %>% prep() %>% bake(NULL) %>% skim()
@@ -878,6 +885,78 @@ out_n <- lubridate::now(tzone = "Asia/Tokyo") %>%
 out_n
 fwrite(res, out_n, row.names = F)
 
-param_submit <- str_c("kaggle competitions submit -c titanic -f ", out_n)
-param_submit
-system(param_submit)
+# param_submit <- str_c("kaggle competitions submit -c titanic -f ", out_n)
+# param_submit
+# system(param_submit)
+
+
+# Keras ------------------------------------------------------------------------
+## recipe ----------------------------------------------------------------------
+recipe_sv
+
+recipe_sv %>% prep() %>% bake(NULL) %>% skim()
+## model -----------------------------------------------------------------------
+model_sv_keras <- 
+  mlp(
+    epochs = 20, 
+    hidden_units = tune(), 
+    dropout = tune(),
+    # penalty = tune(),
+    activation = tune(),
+    ) %>% # param to be tuned
+  set_mode("classification") %>% # binary response var
+  set_engine("keras", 
+             verbose = 1)
+
+model_sv_keras
+
+## workflow --------------------------------------------------------------------
+wf_sv_keras <- 
+  workflow() %>% 
+  add_recipe(recipe_sv) %>% 
+  add_model(model_sv_keras)
+
+## make grid -------------------------------------------------------------------
+param <-
+  wf_sv_keras %>% 
+  hardhat::extract_parameter_set_dials() %>% 
+  update(activation = activation(c("softmax", "relu", "tanh"))) %>% 
+  finalize(recipes::prep(recipe_sv) %>%
+             recipes::bake(new_data = NULL) %>%
+             dplyr::select(-all_outcomes()))
+param
+param$object
+
+hyper_grid <-
+  param %>% 
+  dials::grid_latin_hypercube(size = 1)
+plot(hyper_grid)
+
+## Grid search -----------------------------------------------------------------
+data_train_sv_vFc <-
+  vfold_cv(data_train_sv,
+           v = 10, 
+           repeats = 1,
+           # repeats = 1,
+           strata = Survived)
+data_train_sv_vFc
+
+# all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
+all_cores <- 10
+cl <- makePSOCKcluster(all_cores)
+registerDoParallel(cl)
+
+wf_sv_keras_res <-
+  wf_sv_keras %>% 
+  tune_grid(
+    data_train_sv_vFc,
+    grid = hyper_grid,
+    metrics = metric_set(accuracy, roc_auc, precision, recall),
+    control = control_grid(verbose = TRUE,
+                           parallel_over = "everything")
+  )
+
+registerDoSEQ()
+stopCluster(cl)
+## 
+collect_notes(wf_sv_keras_res)$note[[1]]

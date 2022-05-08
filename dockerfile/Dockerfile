@@ -24,6 +24,8 @@ RUN echo "install.packages(c('doParallel'))" > tmp.R | Rscript tmp.R
 RUN echo "install.packages(c('skimr'))" > tmp.R | Rscript tmp.R
 RUN echo "install.packages(c('ggrepel'))" > tmp.R | Rscript tmp.R
 RUN echo "install.packages(c('stopwords'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('ggsignif'))" > tmp.R | Rscript tmp.R
+RUN echo "install.packages(c('gghalves'))" > tmp.R | Rscript tmp.R
 
 # RUN echo "install.packages(c('xgboost'))" > tmp.R | Rscript tmp.R
 RUN wget https://github.com/dmlc/xgboost/releases/download/v1.6.0/xgboost_r_gpu_linux_1.6.0.tar.gz
