@@ -717,15 +717,7 @@ recipe_sv_v2 <-
   recipes::step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
   
   # normalize numeric
-  recipes::step_normalize(Fare, Age) %>% 
-  
-  recipes::step_select(#-Royalty,
-                       -Officer,
-                       -Sex_male,
-                       # -Miss, -Master,
-                       
-                       # -Pclass_X3,
-                       -Embarked_Q)
+  recipes::step_normalize(Fare, Age) 
 recipe_sv_v2
 
 recipe_sv_v2 %>% prep() %>% bake(NULL) %>% skim()
@@ -738,11 +730,32 @@ tmp_cor <- recipe_sv_v2 %>% prep() %>% bake(NULL) %>%
   cor(., method = "spearman") %>% 
   round(., digits = 3)
 
-tmp_cor %>% 
+g <- 
+  recipe_sv_v2 %>% prep() %>% bake(NULL) %>% 
+  dplyr::select(-PassengerId) %>% 
+  dplyr::mutate_all(as.numeric) %>% 
+  as.matrix(.) %>% 
+  cor(., method = "spearman") %>% 
+  round(., digits = 3) %>% 
   as.data.table(keep.rownames = T) %>% 
-  dplyr::rename(Col = 1)
+  dplyr::rename(Col_1 = 1) %>% 
+  tidyr::pivot_longer(cols = -Col_1, 
+                      names_to = "Col_2", 
+                      values_to = "Corr") %>% 
+  dplyr::mutate(Col_1 = fct_inorder(Col_1)) %>% 
+  dplyr::mutate(Col_2 = fct_inorder(Col_2) %>% fct_rev) %>% 
+  ggplot(.,
+         aes(x = Col_1,
+             y = Col_2,
+             fill = Corr)) +
+  geom_tile()+
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0) +
+  scale_x_discrete(expand = c(0, 0),position = 'top') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 0))
+g
+ggsave(plot = g, filename = str_c(out_dir, "Cor_feature.png"), dpi = 300)
 
-corrplot(tmp_cor, method = "color", addCoef.col = TRUE)
 
 ## make Model ------------------------------------------------------------------
 model_sv_pred <-
@@ -782,14 +795,14 @@ param$object
 
 hyper_grid <-
   param %>% 
-  dials::grid_latin_hypercube(size = 50)
+  dials::grid_latin_hypercube(size = 100)
 plot(hyper_grid)
 
 ## Grid search -----------------------------------------------------------------
 data_train_sv_vFc <-
   vfold_cv(data_train_sv,
            v = 10, 
-           repeats = 2,
+           repeats = 5,
            # repeats = 1,
            strata = Survived)
 data_train_sv_vFc
@@ -813,7 +826,7 @@ registerDoSEQ()
 stopCluster(cl)
 
 collect_notes(wf_sv_pred_2_res)
-
+autoplot(wf_sv_pred_2_res)
 
 save(wf_sv_pred_2_res, file = str_c(out_dir, "wf_sv_pred_2_res_1.Rdata"))
 
@@ -847,13 +860,12 @@ collect_notes(res) %>% view(.)
 collect_metrics(res)
 
 ## Get prediction result -------------------------------------------------------
-wf_sv_pred_1_last <-
-  wf_sv_pred_1 %>%
-  finalize_workflow(select_best(wf_sv_pred_1_res, "accuracy")) %>%
+wf_sv_pred_2_last <-
+  wf_sv_pred_2_fit %>%
   last_fit(data_split_sv)
 
 res <- data_test_sv %>% 
-  dplyr::mutate(Survived = collect_predictions(wf_sv_pred_1_last) %>% pull(.pred_class)) %>% 
+  dplyr::mutate(Survived = collect_predictions(wf_sv_pred_2_last) %>% pull(.pred_class)) %>% 
   dplyr::arrange(PassengerId) %>% 
   dplyr::select(PassengerId, Survived)
 
@@ -861,8 +873,9 @@ out_n <- lubridate::now(tzone = "Asia/Tokyo") %>%
   as.character() %>% 
   str_replace(., "\\s", "_") %>% 
   str_remove_all(., "-|:|\\s") %>% 
-  str_c(out_dir, "MySubmission_", ., ".csv")
+  str_c(out_dir, "MySubmission_Select_feature_", ., ".csv")
 
+out_n
 fwrite(res, out_n, row.names = F)
 
 param_submit <- str_c("kaggle competitions submit -c titanic -f ", out_n)

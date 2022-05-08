@@ -17,5 +17,6 @@
         "secondary": ""
     },
     "posix_terminal_shell": "bash",
-    "editor_theme": "Monokai"
+    "editor_theme": "Monokai",
+    "auto_save_on_idle": "commit"
 }
