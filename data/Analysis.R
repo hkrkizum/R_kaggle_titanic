@@ -62,8 +62,8 @@ Ticket_group <- Ticket_mod %>%
 df_Ticket <- Ticket_mod %>% 
   dplyr::full_join(Ticket_group)
 
-df_Ticket %>% 
-  view(.)
+# df_Ticket %>% 
+#   view(.)
 
 data_raw_train %>% 
   dplyr::bind_rows(data_raw_test) %>% 
@@ -898,15 +898,15 @@ recipe_sv %>% prep() %>% bake(NULL) %>% skim()
 ## model -----------------------------------------------------------------------
 model_sv_keras <- 
   mlp(
-    epochs = 20, 
+    epochs = 200, 
     hidden_units = tune(), 
     dropout = tune(),
     # penalty = tune(),
-    activation = tune(),
+    activation = "relu",
     ) %>% # param to be tuned
   set_mode("classification") %>% # binary response var
   set_engine("keras", 
-             verbose = 1)
+             verbose = 0)
 
 model_sv_keras
 
@@ -920,8 +920,11 @@ wf_sv_keras <-
 param <-
   wf_sv_keras %>% 
   hardhat::extract_parameter_set_dials() %>% 
-  update(activation = activation(c("softmax", "relu", "tanh"))) %>% 
-  finalize(recipes::prep(recipe_sv) %>%
+  # update(activation = activation(c("softmax", "relu", "tanh"))) %>%
+  # update(activation = activation(c("relu"))) %>%
+  update(dropout = dropout(c(0, 0.999))) %>%
+  finalize(dropout(),activation(),
+           recipes::prep(recipe_sv) %>%
              recipes::bake(new_data = NULL) %>%
              dplyr::select(-all_outcomes()))
 param
@@ -929,34 +932,37 @@ param$object
 
 hyper_grid <-
   param %>% 
-  dials::grid_latin_hypercube(size = 1)
+  # dials::grid_regular(levels = 3)
+  # dials::grid_latin_hypercube(size = 50)
+  dials::grid_max_entropy(size = 50)
 plot(hyper_grid)
 
 ## Grid search -----------------------------------------------------------------
 data_train_sv_vFc <-
   vfold_cv(data_train_sv,
-           v = 10, 
-           repeats = 1,
+           v = 5, 
            # repeats = 1,
+           repeats = 1,
            strata = Survived)
-data_train_sv_vFc
 
-# all_cores <- parallel::detectCores(all.tests = TRUE, logical = FALSE) - 2
-all_cores <- 10
-cl <- makePSOCKcluster(all_cores)
-registerDoParallel(cl)
-
+# RUN, only single
 wf_sv_keras_res <-
   wf_sv_keras %>% 
   tune_grid(
     data_train_sv_vFc,
     grid = hyper_grid,
+    # iter = 10,
+    # param_info = param,
     metrics = metric_set(accuracy, roc_auc, precision, recall),
     control = control_grid(verbose = TRUE,
                            parallel_over = "everything")
+    # control = control_bayes(verbose = TRUE,
+    #                         no_improve = 10L,
+    #                         parallel_over = "everything")
   )
+wf_sv_keras_res
 
-registerDoSEQ()
-stopCluster(cl)
-## 
+save(wf_sv_keras_res, file = str_c(out_dir, "wf_sv_keras_res.Rdata"))
 collect_notes(wf_sv_keras_res)$note[[1]]
+collect_metrics(wf_sv_keras_res)
+show_best(wf_sv_keras_res, n = 20, metric = "accuracy")
