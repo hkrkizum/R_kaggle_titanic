@@ -1,7 +1,7 @@
 version: '3'
 services:
   RStudio:
-    image: rocker/ml:4.2.0-cuda11.1
+    image: hkrkizum/r-tidymodels:20220508-keras
     ports:
       - "8787:8787"
     environment:
